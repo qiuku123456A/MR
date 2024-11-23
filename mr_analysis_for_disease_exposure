@@ -1,0 +1,698 @@
+Disclaimer:
+This code is provided "as is" without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the author or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the code or the use or other dealings in the code.
+Use this code at your own risk. The author assumes no responsibility for any errors or issues that may arise from using this code, including but not limited to data loss, software corruption, or any kind of system damage. It is strongly recommended to thoroughly test the code in a safe environment before using it in production or mission-critical applications.
+By using this code, you acknowledge that you understand these risks and agree to use it responsibly.
+#########################################################################
+
+
+
+# Load necessary package
+library(data.table)
+library(parallel)
+
+# Clear the workspace
+rm(list=ls())
+
+# Set input and output file paths
+input_path <- "new_data_path"
+output_path <- "processed_data/"
+
+# Find all files in the input path ending with .txt.gz
+input_files <- list.files(path = input_path, pattern = "*.txt.gz$", full.names = TRUE)
+
+# Ensure the output folder exists, create it if it does not
+if (!dir.exists(output_path)) {
+  dir.create(output_path)
+}
+
+# Function to process each input file
+process_file <- function(infile) {
+  # Extract the filename without path and extension
+  outputname0 <- basename(gsub(".txt.gz$", "", infile))
+  
+  # Create output CSV filename
+  outputname <- paste0(output_path, outputname0, ".csv")
+  
+  # Read the input file
+  data <- fread(infile)
+  
+  # Filter data to keep rows with Pval less than 5e-08 and ImpMAF greater than 0.001
+  data_filtered <- subset(data, Pval < 5e-08 & ImpMAF > 0.001)
+  
+  # Write the filtered data to a CSV file
+  fwrite(data_filtered, file = outputname)
+}
+
+# Use parallel processing with 24 cores
+num_cores <- 24
+mclapply(input_files, process_file, mc.cores = num_cores)
+####################################################################################################################################
+
+
+# Load necessary packages
+library(data.table)
+library(dplyr)
+library(TwoSampleMR)
+library(parallel)
+
+# Clear the workspace
+rm(list=ls())
+
+# Set input and output file paths
+input_path <- "clumpdata"
+output_path <- "newdata01/"
+
+# Find all files in the input path ending with .csv
+input_files <- list.files(path = input_path, pattern = "*.csv$", full.names = TRUE)
+
+# Ensure the output folder exists, create it if it does not
+dir.create(output_path, showWarnings = FALSE)
+
+# Function to process each input file
+process_file <- function(infile) {
+  # Extract the filename without path and extension
+  outputname0 <- tools::file_path_sans_ext(basename(infile))
+  
+  # Create output CSV filename
+  outputname <- file.path(output_path, paste0(outputname0, ".csv"))
+  
+  # Read exposure data with streamlined settings
+  biofsci <- read_exposure_data(infile, 
+                                sep = ",",
+                                snp_col = "rsids",
+                                beta_col = "Beta",
+                                se_col = "SE",
+                                effect_allele_col = "effectAllele",
+                                other_allele_col = "otherAllele",
+                                eaf_col = "ImpMAF",
+                                pval_col = "Pval",
+                                samplesize_col = "N",
+                                chr_col = "Chrom",
+                                pos_col = "Pos",
+                                clump = FALSE)
+  
+  # Filter and remove duplicate SNPs in a concise manner
+  expo_data <- biofsci %>% filter(SNP != "") %>% distinct(SNP, .keep_all = TRUE)
+  
+  # Prepare data for LD clumping
+  biof_iv <- expo_data %>% select(SNP, pval.exposure) %>% rename(rsid = SNP, pval = pval.exposure)
+  
+  # Perform LD clumping with efficient local reference panel
+  clump_dat <- ld_clump_local(dat = biof_iv,  
+                              clump_kb = 10000,  
+                              clump_r2 = 0.001,  
+                              clump_p = 1,  
+                              bfile = "./data_maf0.01_rs_ref/data_maf0.01_rs_ref",  
+                              plink_bin = "./plink_mac/plink")
+  
+  # Filter data based on clumped SNPs
+  expo_data1 <- expo_data %>% filter(SNP %in% clump_dat$rsid)
+  
+  # Calculate R2 and F statistics efficiently
+  expo_data1 <- expo_data1 %>% mutate(
+    R2 = (2 * beta.exposure^2 * eaf.exposure * (1 - eaf.exposure)) / 
+         (2 * beta.exposure^2 * eaf.exposure * (1 - eaf.exposure) + 
+          2 * se.exposure^2 * samplesize.exposure * eaf.exposure * (1 - eaf.exposure)),
+    F = R2 * (samplesize.exposure - 2) / (1 - R2)
+  )
+  
+  # Write the processed data to a CSV file
+  fwrite(expo_data1, file = outputname)
+}
+
+# Use parallel processing with maximum efficiency
+num_cores <- min(24, detectCores() - 1) # Use 24 cores or maximum available minus one for stability
+mclapply(input_files, process_file, mc.cores = num_cores)
+#################################################################################################################################################################################################################################
+# Load necessary packages
+library(data.table)
+library(dplyr)
+library(TwoSampleMR)
+library(parallel)
+
+# Clear the workspace
+rm(list=ls())
+
+# Set input and output file paths
+input_directory <- "clumpdata"
+output_directory <- "processed_data/"
+
+# Find all files in the input path ending with .csv
+csv_files <- list.files(path = input_directory, pattern = "*.csv$", full.names = TRUE)
+
+# Ensure the output folder exists, create it if it does not
+dir.create(output_directory, showWarnings = FALSE)
+
+# Function to process each input file
+analyze_file <- function(file_path) {
+  # Extract the filename without path and extension
+  file_name <- tools::file_path_sans_ext(basename(file_path))
+  
+  # Create output CSV filename
+  output_file <- file.path(output_directory, paste0(file_name, ".csv"))
+  
+  # Read exposure data with streamlined settings
+  exposure_data <- read_exposure_data(file_path, 
+                                      sep = ",",
+                                      snp_col = "rsids",
+                                      beta_col = "Beta",
+                                      se_col = "SE",
+                                      effect_allele_col = "effectAllele",
+                                      other_allele_col = "otherAllele",
+                                      eaf_col = "ImpMAF",
+                                      pval_col = "Pval",
+                                      samplesize_col = "N",
+                                      chr_col = "Chrom",
+                                      pos_col = "Pos",
+                                      clump = FALSE)
+  
+  # Filter and remove duplicate SNPs in a concise manner
+  unique_snps <- exposure_data %>% filter(SNP != "") %>% distinct(SNP, .keep_all = TRUE)
+  
+  # Prepare data for LD clumping
+  clump_input <- unique_snps %>% select(SNP, pval.exposure) %>% rename(rsid = SNP, pval = pval.exposure)
+  
+  # Perform LD clumping with efficient local reference panel
+  clumped_data <- ld_clump_local(dat = clump_input,  
+                                 clump_kb = 10000,  
+                                 clump_r2 = 0.001,  
+                                 clump_p = 1,  
+                                 bfile = "./data_maf0.01_rs_ref/data_maf0.01_rs_ref",  
+                                 plink_bin = "./plink_mac/plink")
+  
+  # Filter data based on clumped SNPs
+  final_data <- unique_snps %>% filter(SNP %in% clumped_data$rsid)
+  
+  # Calculate R2 and F statistics efficiently
+  final_data <- final_data %>% mutate(
+    R2 = (2 * beta.exposure^2 * eaf.exposure * (1 - eaf.exposure)) / 
+         (2 * beta.exposure^2 * eaf.exposure * (1 - eaf.exposure) + 
+          2 * se.exposure^2 * samplesize.exposure * eaf.exposure * (1 - eaf.exposure)),
+    F = R2 * (samplesize.exposure - 2) / (1 - R2)
+  )
+  
+  # Write the processed data to a CSV file
+  fwrite(final_data, file = output_file)
+}
+
+# Use parallel processing with maximum efficiency
+available_cores <- min(24, detectCores() - 1) # Use 24 cores or maximum available minus one for stability
+mclapply(csv_files, analyze_file, mc.cores = available_cores)
+##################################################################################################################
+# Load necessary packages
+library(data.table)
+library(dplyr)
+library(TwoSampleMR)
+library(parallel)
+library(ggplot2)
+
+# Clear the workspace
+rm(list=ls())
+
+# Set input and output file paths
+input_folder <- "processed_data"
+output_folder <- "final_results/"
+outcome_dataset <- "outcome_data.gz"
+
+# Find all files in the input path ending with .csv
+exposure_files <- list.files(path = input_folder, pattern = "*.csv$", full.names = TRUE)
+
+# Ensure the output folder exists, create it if it does not
+dir.create(output_folder, showWarnings = FALSE)
+
+# Read outcome data
+outcome_data <- read_outcome_data(outcome_dataset, 
+                                  sep = "\t",
+                                  snp_col = "rsids",
+                                  beta_col = "Beta",
+                                  se_col = "SE",
+                                  effect_allele_col = "effectAllele",
+                                  other_allele_col = "otherAllele",
+                                  eaf_col = "ImpMAF",
+                                  pval_col = "Pval",
+                                  samplesize_col = "N",
+                                  chr_col = "Chrom",
+                                  pos_col = "Pos")
+
+# Function to process each exposure file and perform MR analysis
+perform_mr_analysis <- function(exposure_file) {
+  # Extract the filename without path and extension
+  exposure_name <- tools::file_path_sans_ext(basename(exposure_file))
+  
+  # Read exposure data
+  exposure_data <- read_exposure_data(exposure_file, 
+                                      sep = ",",
+                                      snp_col = "rsids",
+                                      beta_col = "Beta",
+                                      se_col = "SE",
+                                      effect_allele_col = "effectAllele",
+                                      other_allele_col = "otherAllele",
+                                      eaf_col = "ImpMAF",
+                                      pval_col = "Pval",
+                                      samplesize_col = "N",
+                                      chr_col = "Chrom",
+                                      pos_col = "Pos",
+                                      clump = FALSE)
+  
+  # Harmonise data
+  harmonised_data <- harmonise_data(
+    exposure_dat = exposure_data, 
+    outcome_dat = outcome_data, 
+    action = 2
+  )
+  
+  # Calculate R2 and F statistics
+  harmonised_data <- harmonised_data %>% mutate(
+    R2 = (2 * (beta.exposure^2) * eaf.exposure * (1 - eaf.exposure)) /
+         (2 * (beta.exposure^2) * eaf.exposure * (1 - eaf.exposure) +
+          2 * samplesize.exposure * eaf.exposure * (1 - eaf.exposure) * se.exposure^2),
+    F = R2 * (samplesize.exposure - 2) / (1 - R2)
+  )
+  
+  # Filter out SNPs with F < 10
+  harmonised_data <- harmonised_data %>% filter(F > 10)
+  
+  # Perform MR analysis
+  mr_results <- mr(harmonised_data)
+  odds_ratios <- generate_odds_ratios(mr_results)
+  
+  # Create output directory for results
+  result_folder <- file.path(output_folder, exposure_name)
+  dir.create(result_folder, showWarnings = FALSE)
+  
+  # Save harmonised data and MR results
+  write.csv(harmonised_data, file = file.path(result_folder, "harmonised_data.csv"), row.names = FALSE, quote = FALSE)
+  write.csv(odds_ratios[, 5:ncol(odds_ratios)], file = file.path(result_folder, "odds_ratios.csv"), row.names = FALSE, quote = FALSE)
+  
+  # Pleiotropy and heterogeneity tests
+  pleiotropy_results <- mr_pleiotropy_test(harmonised_data)
+  write.csv(pleiotropy_results, file = file.path(result_folder, "pleiotropy_results.csv"), quote = FALSE)
+  
+  heterogeneity_results <- mr_heterogeneity(harmonised_data)
+  write.csv(heterogeneity_results, file = file.path(result_folder, "heterogeneity_results.csv"), quote = FALSE)
+  
+  # Dynamic plot size adjustment
+  adjust_plot_dimensions <- function(data, base_width = 8, base_height = 8, point_factor = 0.1) {
+    num_points <- nrow(data)
+    width <- base_width + point_factor * num_points
+    height <- base_height + point_factor * num_points
+    return(list(width = width, height = height))
+  }
+  plot_dimensions <- adjust_plot_dimensions(harmonised_data)
+  
+  # Generate scatter plot
+  scatter_plot <- mr_scatter_plot(mr_results, harmonised_data)
+  ggsave(scatter_plot[[1]], file = file.path(result_folder, "scatter_plot.pdf"), width = plot_dimensions$width, height = plot_dimensions$height)
+  ggsave(scatter_plot[[1]], file = file.path(result_folder, "scatter_plot.jpg"), width = plot_dimensions$width, height = plot_dimensions$height, dpi = 300)
+  
+  # Generate forest plot
+  singlesnp_results <- mr_singlesnp(harmonised_data)
+  singlesnp_odds_ratios <- generate_odds_ratios(singlesnp_results)
+  write.csv(singlesnp_odds_ratios, file = file.path(result_folder, "singlesnp_odds_ratios.csv"), row.names = FALSE, quote = FALSE)
+  
+  forest_plot <- mr_forest_plot(singlesnp_results)
+  ggsave(forest_plot[[1]], file = file.path(result_folder, "forest_plot.pdf"), width = plot_dimensions$width, height = plot_dimensions$height)
+  ggsave(forest_plot[[1]], file = file.path(result_folder, "forest_plot.jpg"), width = plot_dimensions$width, height = plot_dimensions$height, dpi = 300)
+  
+  # Generate leave-one-out sensitivity analysis plot
+  leaveoneout_results <- mr_leaveoneout(harmonised_data)
+  leaveoneout_plot <- mr_leaveoneout_plot(leaveoneout_results)
+  ggsave(leaveoneout_plot[[1]], file = file.path(result_folder, "sensitivity_analysis.pdf"), width = plot_dimensions$width, height = plot_dimensions$height)
+  ggsave(leaveoneout_plot[[1]], file = file.path(result_folder, "sensitivity_analysis.jpg"), width = plot_dimensions$width, height = plot_dimensions$height, dpi = 300)
+  
+  return(data.frame(id = exposure_name, pval = mr_results$pval))
+}
+
+# Use parallel processing to perform MR analysis on all exposure files
+num_cores <- min(24, detectCores() - 1) # Use 24 cores or maximum available minus one for stability
+analysis_results <- mclapply(exposure_files, perform_mr_analysis, mc.cores = num_cores)
+
+# Combine results and save
+combined_results <- do.call(rbind, analysis_results)
+combined_results <- na.omit(combined_results)
+write.csv(combined_results, file = "all_mr_results.csv", row.names = FALSE, quote = FALSE)
+
+# Read CSV files
+odds_ratios_data <- read.csv("all-or.csv")
+exposure_mapping <- read.csv("exposure_mapping.csv")
+
+# Create dictionary: use DISEASE.TRAIT, reportedTrait as value, id as key
+trait_dictionary <- setNames(exposure_mapping$reportedTrait, exposure_mapping$id)
+
+# Use dictionary to populate DISEASE.TRAIT column in odds_ratios_data
+odds_ratios_data$reportedTrait <- trait_dictionary[as.character(odds_ratios_data$id)]
+
+# Output new CSV file
+write.csv(odds_ratios_data, "updated_all-or.csv", row.names = FALSE)
+######################################################################################################
+# Load necessary packages
+library(grid)
+library(readr)
+library(forestploter)
+
+# Define methods to display
+selected_methods <- c("Inverse variance weighted", "MR Egger", "Simple mode", "Weighted median", "Weighted mode")
+
+# Read the merged output file
+input_file <- "updated_all-or.csv"
+
+combined_data <- data.frame()
+for (file in input_file) {
+  temp_data <- read.csv(file, header = TRUE, sep = ",", check.names = FALSE)
+  combined_data <- rbind(combined_data, temp_data)
+}
+
+# Filter data based on selected methods
+filtered_data <- combined_data[(combined_data$method %in% selected_methods),]
+line_positions <- cumsum(c(1, table(filtered_data[, "exposure"])))
+
+# Add additional columns for formatting the forest plot
+filtered_data$' ' <- paste(rep(" ", 10), collapse = " ")
+filtered_data$'OR(95% CI)' <- ifelse(is.na(filtered_data$or), "", sprintf("%.3f (%.3f to %.3f)", filtered_data$or, filtered_data$or_lci95, filtered_data$or_uci95))
+filtered_data$pval <- ifelse(filtered_data$pval < 0.001, "<0.001", sprintf("%.3f", filtered_data$pval))
+filtered_data$exposure <- ifelse(is.na(filtered_data$exposure), "", filtered_data$exposure)
+filtered_data$nsnp <- ifelse(is.na(filtered_data$nsnp), "", filtered_data$nsnp)
+filtered_data[duplicated(filtered_data$exposure),]$exposure <- ""
+
+# Set forest plot theme
+plot_theme <- forest_theme(base_size = 20,
+                           ci_pch = 16, ci_lty = 1, ci_lwd = 1.5, ci_col = "black", ci_Theight = 0.2,
+                           refline_lty = "dashed", refline_lwd = 1, refline_col = "grey20",
+                           xaxis_cex = 1,
+                           footnote_cex = 0.6, footnote_col = "blue")
+
+# Create the forest plot
+forest_plot <- forestploter::forest(filtered_data[, c("exposure", "nsnp", "outcome", "method", "pval", " ", "OR(95% CI)")],
+                                    est = filtered_data$or,
+                                    lower = filtered_data$or_lci95,
+                                    upper = filtered_data$or_uci95,
+                                    ci_column = 6,
+                                    ref_line = 1,
+                                    xlim = c(0.75, 1.25),
+                                    theme = plot_theme)
+
+# Set box colors for the confidence intervals
+ci_colors <- c("#E64B35", "#4DBBD5", "#00A087", "#3C5488", "#F39B7F", "#8491B4", "#91D1C2", "#DC0000", "#7E6148")
+ci_colors <- ci_colors[as.numeric(as.factor(filtered_data$method))]
+for (i in 1:nrow(filtered_data)) {
+  forest_plot <- edit_plot(forest_plot, col = 6, row = i, which = "ci", gp = gpar(fill = ci_colors[i], fontsize = 25))
+}
+
+# Highlight p-values less than 0.05 in bold
+significant_pvals <- which(as.numeric(gsub("<", "", filtered_data$pval)) < 0.05)
+if (length(significant_pvals) > 0) {
+  for (i in significant_pvals) {
+    forest_plot <- edit_plot(forest_plot, col = 5, row = i, which = "text", gp = gpar(fontface = "bold"))
+  }
+}
+
+# Add borders to the plot
+forest_plot <- add_border(forest_plot, part = "header", row = 1, where = "top", gp = gpar(lwd = 2))
+forest_plot <- add_border(forest_plot, part = "header", row = line_positions, gp = gpar(lwd = 1))
+forest_plot <- edit_plot(forest_plot, col = 1:ncol(filtered_data), row = 1:nrow(filtered_data), which = "text", gp = gpar(fontsize = 12))
+forest_plot <- edit_plot(forest_plot, col = 1:ncol(filtered_data), which = "text", hjust = unit(0.5, "npc"), part = "header", x = unit(0.5, "npc"))
+forest_plot <- edit_plot(forest_plot, col = 1:ncol(filtered_data), which = "text", hjust = unit(0.5, "npc"), x = unit(0.5, "npc"))
+
+# Save the plot in multiple formats
+pdf("forest.pdf", width = 25, height = 50)
+print(forest_plot)
+dev.off()
+
+png("forest.png", width = 5800, height = 7500, res = 300)
+print(forest_plot)
+dev.off()
+
+jpeg("forest.jpg", width = 5800, height = 7500, res = 300)
+print(forest_plot)
+dev.off()
+
+tiff("forest.tif", width = 5800, height = 7500, res = 300)
+print(forest_plot)
+dev.off()
+##########################################################################################################################################
+# Load necessary packages
+library(stats)
+
+# Load data from CSV file
+df <- read.csv("ukb-d-I50_mediation_all.csv")
+
+# Calculate the indirect effect
+df$Indirect.Effect <- df$r2.b * df$r3.b
+
+# Calculate the standard error of the indirect effect
+df$se <- sqrt((df$r3.b^2 * df$r2.se^2) + (df$r2.b^2 * df$r3.se^2))
+
+# Calculate the Sobel Z-value
+df$Z <- df$Indirect.Effect / df$se
+
+# Calculate the p-value
+df$P <- 2 * (1 - pnorm(abs(df$Z)))
+
+# Extract the total effect (r1.b is the total effect)
+df$Total.Effect <- df$r1.b
+
+# Calculate the direct effect
+df$Direct.Effect <- df$Total.Effect - df$Indirect.Effect
+
+# Calculate the mediation proportion
+df$`Effect proportion` <- df$Indirect.Effect / df$Total.Effect
+
+# Calculate the 95% confidence interval for the indirect effect
+df$lci <- df$Indirect.Effect - 1.96 * df$se
+df$uci <- df$Indirect.Effect + 1.96 * df$se
+
+# View the results, including mediation proportion and confidence intervals
+head(df[, c("exposure", "Mediator", "Total.Effect", "Indirect.Effect", "Direct.Effect", "se", "Z", "P", "lci", "uci", "Effect proportion")])
+
+# Write the results to a CSV file
+write.csv(df[, c("exposure", "Mediator", "Total.Effect", "Indirect.Effect", "Direct.Effect", "se", "Z", "P", "lci", "uci", "Effect proportion")], file = "mediation_results.csv", row.names = FALSE)
+###################################################################################################################################################################################################
+
+# Mediation Effect Visualization Script
+# This script reads mediation analysis data from a CSV file and creates a horizontal bar chart to visualize the effect proportion between exposure and mediator.
+# Note: Ensure to update the file paths as needed to match your local setup.
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load data from CSV file (ensure the file path is correct)
+file_path = r"path/to/your/data/01.csv"
+df = pd.read_csv(file_path)
+
+# Verify the data
+print(df.head())
+
+# Create a combined label for "Exposure → Mediator"
+df["Label"] = df["Exposure"] + " → " + df["Mediator"]
+
+# Convert "Effect Proportion" to numeric values
+df["Effect Proportion (%)"] = df["Effect proportion"].str.rstrip("%").astype(float)
+
+# Define color palette using Seaborn's gradient colors
+colors = sns.color_palette("plasma", len(df))  # Use the "plasma" colormap
+
+# Plot horizontal bar chart
+plt.figure(figsize=(14, 10))  # Set figure size
+bars = plt.barh(df["Label"], df["Effect Proportion (%)"], color=colors, edgecolor="none")
+
+# Add value labels to the bars
+for bar in bars:
+    plt.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
+             f"{bar.get_width():.2f}%", va='center', fontsize=10, color="black")
+
+# Beautify the chart
+plt.xlabel("Effect Proportion (%)", fontsize=14, weight="bold")
+plt.ylabel("Exposure → Mediator", fontsize=14, weight="bold")
+plt.title("Mediation Analysis: Exposure to Mediator", fontsize=16, weight="bold", pad=15)
+plt.gca().invert_yaxis()  # Invert y-axis to place the highest value at the top
+plt.grid(axis='x', linestyle="--", alpha=0.6)  # Add grid lines
+
+# Set x-axis limits
+max_value = df["Effect Proportion (%)"].max()
+plt.xlim(0, max_value + 5)  # Set the upper limit slightly above the max value
+
+plt.tight_layout()
+
+# Save high-resolution image
+output_path = r"path/to/your/output/010_output.png"
+plt.savefig(output_path, dpi=300)
+
+# Show the chart
+plt.show()
+
+# Load necessary packages
+library(TwoSampleMR)
+library(dplyr)
+library(ieugwasr)
+library(plinkbinr)
+library(data.table)
+
+# Clear the workspace
+rm(list=ls())
+
+# Load outcome data and process for local clumping
+# Load gzipped outcome data
+outcome_data_raw <- fread("finngen_R9_N14_ENDOMETRIOSIS.gz")
+
+# View header to understand the structure
+head_outcome <- head(outcome_data_raw)
+print(head_outcome)
+
+# Rename columns for consistency
+names(outcome_data_raw)[names(outcome_data_raw) == "SNP"] <- "rsids"
+names(outcome_data_raw)[names(outcome_data_raw) == "pval.exposure"] <- "pval"
+
+# Filter outcome data by p-value threshold
+filtered_outcome <- subset(outcome_data_raw, pval < 1e-05)
+
+# Perform local clumping
+clumped_outcome <- ieugwasr::ld_clump(
+  dplyr::tibble(rsid = filtered_outcome$rsids, pval = filtered_outcome$pval),
+  plink_bin = "path/to/plink",
+  bfile = "path/to/EUR",
+  clump_kb = 10000,
+  clump_r2 = 0.001,
+  clump_p = 1
+)
+
+# Merge the clumped data with the filtered outcome data
+colnames(clumped_outcome) <- c("rsids", "pval", "id")
+processed_outcome <- merge(filtered_outcome, clumped_outcome, by = c("rsids", "pval"))
+
+# Save the processed outcome data
+write.table(processed_outcome, file ="processed_outcome_clumped.txt", sep = "\t", row.names = FALSE)
+
+# Load exposure data
+exposure_data_path <- "path/to/your/exposure_data.csv"
+exposure_data <- read_exposure_data(
+  exposure_data_path,
+  sep = ",",
+  snp_col = "rsid",
+  beta_col = "Beta",
+  se_col = "SE",
+  effect_allele_col = "effect_allele",
+  other_allele_col = "other_allele",
+  eaf_col = "eaf",
+  pval_col = "pval",
+  samplesize_col = "samplesize",
+  chr_col = "chr",
+  pos_col = "pos"
+)
+
+# Harmonise data for reverse MR (using outcome as exposure and exposure as outcome)
+harm_data <- harmonise_data(
+  outcome_dat = processed_outcome,  # Use processed outcome data as exposure
+  exposure_dat = exposure_data,  # Treat exposure as outcome
+  action = 2
+)
+
+# Save harmonised data
+write.csv(harm_data, file = "harmonise.csv", row.names = FALSE, quote = FALSE)
+
+# Perform Mendelian Randomization analysis
+mr_results <- mr(harm_data)
+
+# Generate odds ratios from MR results
+mr_odds_ratios <- generate_odds_ratios(mr_results)
+write.csv(mr_odds_ratios[, 5:ncol(mr_odds_ratios)], file = "OR.csv", row.names = FALSE, quote = FALSE)
+
+# Pleiotropy and heterogeneity tests
+pleiotropy_test <- mr_pleiotropy_test(harm_data)
+write.csv(pleiotropy_test, file = "pleiotropy.csv", row.names = FALSE, quote = FALSE)
+
+heterogeneity_test <- mr_heterogeneity(harm_data)
+write.csv(heterogeneity_test, file = "heterogeneity.csv", row.names = FALSE, quote = FALSE)
+
+# MR-PRESSO analysis
+presso_results <- mr_presso(BetaOutcome = "beta.outcome", BetaExposure = "beta.exposure", SdOutcome = "se.outcome", SdExposure = "se.exposure", OUTLIERtest = TRUE, DISTORTIONtest = TRUE, data = harm_data, NbDistribution = 1000,  SignifThreshold = 0.05)
+write.csv(presso_results$Main, file = "presso.csv", row.names = FALSE, quote = FALSE)
+
+# Plot MR results
+scatter_plot <- mr_scatter_plot(mr_results, harm_data)
+ggsave(scatter_plot[[1]], file = "scatter.pdf", dpi = 300)
+
+# Sensitivity analysis
+sensitivity_analysis <- mr_leaveoneout(harm_data)
+write.csv(sensitivity_analysis, file = "sensitivity-analysis.csv", row.names = FALSE, quote = FALSE)
+
+# Forest plot
+forest_plot <- mr_forest_plot(mr_singlesnp(harm_data))
+ggsave(forest_plot[[1]], file = "forest.pdf", dpi = 300)
+
+# Funnel plot
+funnel_plot <- mr_funnel_plot(mr_singlesnp(harm_data))
+ggsave(funnel_plot[[1]], file = "funnelplot.pdf", dpi = 300)
+
+# Summary of results
+print(mr_results)
+print(pleiotropy_test)
+print(heterogeneity_test)
+###################################################################################################################################################
+Statement: This study uses the following code to organize the files and MR results
+import os
+import glob
+
+def delete_image_files(directory):
+    # Define the file extensions to delete
+    extensions = ('*.png', '*.tif', '*.tiff', '*.jpg', '*.jpeg')
+    
+    # Recursively search for each extension in the specified directory and its subdirectories
+    for extension in extensions:
+        # Use glob to find all files matching the extension pattern
+        files = glob.glob(os.path.join(directory, '**', extension), recursive=True)
+        
+        # Iterate over the found files and delete them
+        for file_path in files:
+            try:
+                os.remove(file_path)
+                print(f"Deleted: {file_path}")
+            except Exception as e:
+                print(f"Error deleting {file_path}: {e}")
+
+if __name__ == "__main__":
+    target_directory = input("Please enter the directory to delete image files from: ")
+    if os.path.exists(target_directory) and os.path.isdir(target_directory):
+        delete_image_files(target_directory)
+    else:
+        print("Invalid directory. Please provide a valid directory path.")
+
+#####################################################################################################################################################
+import os
+import glob
+import pandas as pd
+
+def convert_csv_to_excel(directory):
+    # Find all CSV files in the directory and subdirectories
+    csv_files = glob.glob(os.path.join(directory, '**', '*.csv'), recursive=True)
+    
+    # Iterate over each CSV file and convert to Excel
+    for csv_file in csv_files:
+        try:
+            # Read the CSV file
+            df = pd.read_csv(csv_file)
+            
+            # Define the Excel file path
+            excel_file = os.path.splitext(csv_file)[0] + '.xlsx'
+            
+            # Save the DataFrame to an Excel file
+            df.to_excel(excel_file, index=False)
+            print(f"Converted: {csv_file} to {excel_file}")
+            
+            # Delete the original CSV file
+            os.remove(csv_file)
+            print(f"Deleted: {csv_file}")
+        except Exception as e:
+            print(f"Error processing {csv_file}: {e}")
+
+if __name__ == "__main__":
+    target_directory = input("Please enter the directory to convert CSV files to Excel and delete the original CSV files: ")
+    if os.path.exists(target_directory) and os.path.isdir(target_directory):
+        convert_csv_to_excel(target_directory)
+    else:
+        print("Invalid directory. Please provide a valid directory path.")
+#########################################################################################################################################################
+Disclaimer:
+This code is provided "as is" without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the author or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the code or the use or other dealings in the code.
+Use this code at your own risk. The author assumes no responsibility for any errors or issues that may arise from using this code, including but not limited to data loss, software corruption, or any kind of system damage. It is strongly recommended to thoroughly test the code in a safe environment before using it in production or mission-critical applications.
+By using this code, you acknowledge that you understand these risks and agree to use it responsibly.
